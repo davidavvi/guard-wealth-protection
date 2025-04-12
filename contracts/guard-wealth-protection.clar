@@ -827,3 +827,91 @@
     )
   )
 )
+
+;; Emergency container lock
+;; Immediately locks a container when suspicious activity is detected
+(define-public (emergency-container-lock (container-identifier uint) (security-reason (string-ascii 30)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (current-status (get container-status container-details))
+      )
+      ;; Can be triggered by originator, beneficiary, or system controller
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      ;; Only active containers can be locked
+      (asserts! (or (is-eq current-status "pending") (is-eq current-status "accepted")) (err u501))
+      (asserts! (<= block-height (get termination-block container-details)) ERROR_CONTAINER_LAPSED)
+
+      (print {event: "emergency_lock_activated", container-identifier: container-identifier, 
+              requestor: tx-sender, security-reason: security-reason, lock-time: block-height})
+      (ok true)
+    )
+  )
+)
+
+;; Resource threshold verification
+;; Adds additional verification requirements for high-value containers
+(define-public (enforce-threshold-verification (container-identifier uint) (verification-method (string-ascii 20)) (verification-proof (buff 64)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (resource-amount (get quantity container-details))
+      )
+      ;; Only system controller can enforce verification
+      (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+      ;; Only for high-value containers (threshold: 15000)
+      (asserts! (> resource-amount u15000) (err u601))
+      ;; Only for active containers
+      (asserts! (is-eq (get container-status container-details) "pending") ERROR_ALREADY_PROCESSED)
+      ;; Verify method is supported
+      (asserts! (or (is-eq verification-method "kyc-verification") 
+                    (is-eq verification-method "regulatory-check")
+                    (is-eq verification-method "enhanced-identity")) (err u602))
+
+      (print {event: "threshold_verification_enforced", container-identifier: container-identifier, 
+              verification-method: verification-method, proof-hash: (hash160 verification-proof),
+              resource-amount: resource-amount})
+      (ok true)
+    )
+  )
+)
+
+;; Time-locked gradual release
+;; Implements staged resource release for risk mitigation
+(define-public (configure-gradual-release (container-identifier uint) (release-stages uint) (blocks-between-stages uint))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (asserts! (> release-stages u1) ERROR_INVALID_QUANTITY) ;; At least 2 stages required
+    (asserts! (<= release-stages u5) ERROR_INVALID_QUANTITY) ;; Maximum 5 stages
+    (asserts! (>= blocks-between-stages u6) ERROR_INVALID_QUANTITY) ;; Minimum ~1 hour between stages
+    (asserts! (<= blocks-between-stages u144) ERROR_INVALID_QUANTITY) ;; Maximum ~1 day between stages
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (current-status (get container-status container-details))
+        (resource-amount (get quantity container-details))
+        (stage-amount (/ resource-amount release-stages))
+      )
+      ;; Only originator can configure
+      (asserts! (is-eq tx-sender source) ERROR_PERMISSION_DENIED)
+      ;; Only pending containers can be configured
+      (asserts! (is-eq current-status "pending") ERROR_ALREADY_PROCESSED)
+      ;; Ensure stage amount divides evenly
+      (asserts! (is-eq (* stage-amount release-stages) resource-amount) (err u701))
+
+      (print {event: "gradual_release_configured", container-identifier: container-identifier, 
+              stages: release-stages, blocks-between: blocks-between-stages, 
+              stage-amount: stage-amount, first-release: (+ block-height blocks-between-stages)})
+      (ok true)
+    )
+  )
+)
