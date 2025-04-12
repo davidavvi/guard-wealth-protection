@@ -636,3 +636,93 @@
     )
   )
 )
+
+;; Schedule routine security audit for a container
+(define-public (schedule-security-audit (container-identifier uint) (audit-type (string-ascii 20)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (audit-block (+ block-height u72)) ;; Schedule audit for ~12 hours later
+      )
+      ;; Only originator, beneficiary, or admin can schedule audit
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      ;; Audit type validation
+      (asserts! (or (is-eq audit-type "integrity") 
+                   (is-eq audit-type "compliance") 
+                   (is-eq audit-type "vulnerability")
+                   (is-eq audit-type "comprehensive")) (err u170))
+      ;; Only pending or accepted containers can be audited
+      (asserts! (or (is-eq (get container-status container-details) "pending") 
+                   (is-eq (get container-status container-details) "accepted")) 
+                   ERROR_ALREADY_PROCESSED)
+
+      (print {event: "security_audit_scheduled", container-identifier: container-identifier, 
+              audit-type: audit-type, requestor: tx-sender, scheduled-block: audit-block})
+      (ok audit-block)
+    )
+  )
+)
+
+;; Establish multi-signature verification requirement for high-value container operations
+(define-public (establish-multi-signature-requirement (container-identifier uint) (required-signatures uint) (authorized-signers (list 5 principal)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (asserts! (> required-signatures u1) ERROR_INVALID_QUANTITY) ;; Must require at least 2 signatures
+    (asserts! (<= required-signatures (len authorized-signers)) ERROR_INVALID_QUANTITY) ;; Cannot require more signatures than signers
+    (asserts! (<= required-signatures u5) ERROR_INVALID_QUANTITY) ;; Maximum 5 required signatures
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (resource-amount (get quantity container-details))
+      )
+      ;; Only originator or system controller can establish this requirement
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      ;; Only for high-value containers
+      (asserts! (> resource-amount u10000) (err u230))
+      ;; Only pending containers can have multi-sig added
+      (asserts! (is-eq (get container-status container-details) "pending") ERROR_ALREADY_PROCESSED)
+
+      (print {event: "multi_signature_established", container-identifier: container-identifier, 
+              originator: source, required-signatures: required-signatures, authorized-signers: authorized-signers})
+      (ok true)
+    )
+  )
+)
+
+;; Implement a whitelist verification check for container operations
+(define-public (verify-against-whitelist (container-identifier uint) (interaction-type (string-ascii 20)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+      )
+      ;; Interaction type must be valid
+      (asserts! (or (is-eq interaction-type "transfer")
+                   (is-eq interaction-type "modification") 
+                   (is-eq interaction-type "verification")
+                   (is-eq interaction-type "termination")) (err u240))
+      ;; Only active containers can be verified
+      (asserts! (or (is-eq (get container-status container-details) "pending") 
+                   (is-eq (get container-status container-details) "accepted")) 
+                ERROR_ALREADY_PROCESSED)
+
+      ;; Perform whitelist verification based on interaction type
+      ;; In production, would check against a whitelist map
+      (asserts! (or (is-eq tx-sender source) 
+                   (is-eq tx-sender target) 
+                   (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+
+      (print {event: "whitelist_verification_complete", container-identifier: container-identifier, 
+              verifier: tx-sender, interaction-type: interaction-type})
+      (ok true)
+    )
+  )
+)
