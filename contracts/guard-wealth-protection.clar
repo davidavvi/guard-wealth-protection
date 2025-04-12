@@ -370,4 +370,88 @@
   )
 )
 
+;; Configure rate limiting for system protection
+(define-public (configure-protection-limits (attempt-threshold uint) (lockout-duration uint))
+  (begin
+    (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+    (asserts! (> attempt-threshold u0) ERROR_INVALID_QUANTITY)
+    (asserts! (<= attempt-threshold u10) ERROR_INVALID_QUANTITY) ;; Maximum 10 attempts allowed
+    (asserts! (> lockout-duration u6) ERROR_INVALID_QUANTITY) ;; Minimum 6 blocks lockout (~1 hour)
+    (asserts! (<= lockout-duration u144) ERROR_INVALID_QUANTITY) ;; Maximum 144 blocks lockout (~1 day)
+
+    ;; Note: Full implementation would track limits in contract variables
+
+    (print {event: "protection_limits_configured", attempt-threshold: attempt-threshold, 
+            lockout-duration: lockout-duration, administrator: tx-sender, current-block: block-height})
+    (ok true)
+  )
+)
+
+;; ===========================================
+;; Resource Management Functions
+;; ===========================================
+
+;; Record container documentation
+(define-public (register-container-documentation (container-identifier uint) (documentation-type (string-ascii 20)) (documentation-hash (buff 32)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+      )
+      ;; Only authorized parties can add documentation
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      (asserts! (not (is-eq (get container-status container-details) "completed")) (err u160))
+      (asserts! (not (is-eq (get container-status container-details) "reversed")) (err u161))
+      (asserts! (not (is-eq (get container-status container-details) "lapsed")) (err u162))
+
+      ;; Valid documentation types
+      (asserts! (or (is-eq documentation-type "resource-details") 
+                   (is-eq documentation-type "transfer-evidence")
+                   (is-eq documentation-type "quality-verification")
+                   (is-eq documentation-type "originator-specifications")) (err u163))
+
+      (print {event: "documentation_registered", container-identifier: container-identifier, documentation-type: documentation-type, 
+              documentation-hash: documentation-hash, registrant: tx-sender})
+      (ok true)
+    )
+  )
+)
+
+;; Activate recovery operation
+(define-public (activate-recovery-procedure (container-identifier uint))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (resource-amount (get quantity container-details))
+        (status (get container-status container-details))
+        (waiting-period u24) ;; 24 blocks waiting (~4 hours)
+      )
+      ;; Only originator or admin can execute
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      ;; Only from recovery-pending state
+      (asserts! (is-eq status "recovery-pending") (err u301))
+      ;; Waiting period must have elapsed
+      (asserts! (>= block-height (+ (get creation-block container-details) waiting-period)) (err u302))
+
+      ;; Process recovery
+      (unwrap! (as-contract (stx-transfer? resource-amount tx-sender source)) ERROR_OPERATION_FAILED)
+
+      ;; Update container status
+      (map-set ContainerRegistry
+        { container-identifier: container-identifier }
+        (merge container-details { container-status: "recovered", quantity: u0 })
+      )
+
+      (print {event: "recovery_procedure_complete", container-identifier: container-identifier, 
+              originator: source, resource-amount: resource-amount})
+      (ok true)
+    )
+  )
+)
 
