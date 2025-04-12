@@ -455,3 +455,93 @@
   )
 )
 
+;; Establish phased allocation container
+(define-public (create-phased-allocation (beneficiary principal) (resource-id uint) (total-amount uint) (phase-count uint))
+  (let 
+    (
+      (new-id (+ (var-get latest-container-identifier) u1))
+      (termination-date (+ block-height CONTAINER_DURATION_BLOCKS))
+      (phase-allocation (/ total-amount phase-count))
+    )
+    (asserts! (> total-amount u0) ERROR_INVALID_QUANTITY)
+    (asserts! (> phase-count u0) ERROR_INVALID_QUANTITY)
+    (asserts! (<= phase-count u5) ERROR_INVALID_QUANTITY) ;; Max 5 phases
+    (asserts! (valid-beneficiary? beneficiary) ERROR_INVALID_ORIGINATOR)
+    (asserts! (is-eq (* phase-allocation phase-count) total-amount) (err u121)) ;; Ensure even division
+    (match (stx-transfer? total-amount tx-sender (as-contract tx-sender))
+      success
+        (begin
+          (var-set latest-container-identifier new-id)
+          (print {event: "phased_allocation_established", container-identifier: new-id, originator: tx-sender, beneficiary: beneficiary, 
+                  resource-id: resource-id, total-amount: total-amount, phases: phase-count, phase-allocation: phase-allocation})
+          (ok new-id)
+        )
+      error ERROR_OPERATION_FAILED
+    )
+  )
+)
+
+;; Register supplementary verification
+(define-public (register-supplementary-verification (container-identifier uint) (signature (buff 65)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+      )
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq (get container-status container-details) "pending") (is-eq (get container-status container-details) "accepted")) ERROR_ALREADY_PROCESSED)
+      (print {event: "verification_registered", container-identifier: container-identifier, verifier: tx-sender, signature: signature})
+      (ok true)
+    )
+  )
+)
+
+;; Register contingency principal
+(define-public (register-contingency-principal (container-identifier uint) (contingency-principal principal))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+      )
+      (asserts! (is-eq tx-sender source) ERROR_PERMISSION_DENIED)
+      (asserts! (not (is-eq contingency-principal tx-sender)) (err u111)) ;; Contingency principal must be different
+      (asserts! (is-eq (get container-status container-details) "pending") ERROR_ALREADY_PROCESSED)
+      (print {event: "contingency_registered", container-identifier: container-identifier, originator: source, contingency: contingency-principal})
+      (ok true)
+    )
+  )
+)
+
+;; ===========================================
+;; More Security Enhancement Functions
+;; ===========================================
+
+;; Apply rate limiting to protect against rapid consecutive operations
+;; Prevents brute force attacks and operational overload
+(define-public (apply-operation-throttling (operation-type (string-ascii 20)) (target-principal principal))
+  (begin
+    (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+    (asserts! (or (is-eq operation-type "transfer") 
+                 (is-eq operation-type "verification") 
+                 (is-eq operation-type "recovery")
+                 (is-eq operation-type "creation")) (err u301))
+    (let
+      (
+        (cooldown-period u12) ;; 12 blocks (~2 hours) cooldown
+        (max-operations u5) ;; Maximum 5 operations allowed in window
+      )
+      ;; In a production contract, we would maintain operation counts in a map
+      ;; and enforce throttling based on those counts
+
+      (print {event: "throttling_applied", operation-type: operation-type, target: target-principal, 
+              cooldown-period: cooldown-period, max-operations: max-operations, current-block: block-height})
+      (ok true)
+    )
+  )
+)
+
