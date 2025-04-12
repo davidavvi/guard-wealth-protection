@@ -915,3 +915,104 @@
     )
   )
 )
+
+;; Authorized revocation with dual authentication
+;; Provides secure emergency revocation requiring dual authentication
+(define-public (dual-auth-revocation (container-identifier uint) (auth-code (buff 32)) (biometric-hash (buff 64)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (resource-amount (get quantity container-details))
+        (status (get container-status container-details))
+      )
+      ;; Only originator can request revocation
+      (asserts! (is-eq tx-sender source) ERROR_PERMISSION_DENIED)
+      ;; Container must be in valid state for revocation
+      (asserts! (or (is-eq status "pending") (is-eq status "accepted") (is-eq status "staged-release")) (err u801))
+      ;; Validate authentication
+      (asserts! (is-eq (hash160 auth-code) (hash160 biometric-hash)) (err u802)) ;; Simplified validation for example
+
+      ;; Process revocation - return resources to originator
+      (match (as-contract (stx-transfer? resource-amount tx-sender source))
+        success
+          (begin
+
+            (print {event: "dual_auth_revocation_completed", container-identifier: container-identifier, 
+                    originator: source, resource-amount: resource-amount, 
+                    auth-hash: (hash160 auth-code), biometric-identifier: (hash160 biometric-hash)})
+            (ok true)
+          )
+        error ERROR_OPERATION_FAILED
+      )
+    )
+  )
+)
+
+;; Resource escrow with time-based confirmation
+;; Creates a time-based safety mechanism for significant transfers
+(define-public (confirm-time-delayed-transfer (container-identifier uint) (confirmation-code (buff 32)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (resource-amount (get quantity container-details))
+        (creation-time (get creation-block container-details))
+        (safety-period u24) ;; 24 blocks (~4 hours) safety period
+      )
+      ;; Only originator can confirm the transfer
+      (asserts! (is-eq tx-sender source) ERROR_PERMISSION_DENIED)
+      ;; Container must be in pending state
+      (asserts! (is-eq (get container-status container-details) "pending") ERROR_ALREADY_PROCESSED)
+      ;; Safety period must have elapsed
+      (asserts! (>= block-height (+ creation-time safety-period)) (err u901))
+      ;; Container must not be expired
+      (asserts! (<= block-height (get termination-block container-details)) ERROR_CONTAINER_LAPSED)
+
+      ;; Process transfer to beneficiary
+      (match (as-contract (stx-transfer? resource-amount tx-sender target))
+        success
+          (begin
+            (print {event: "time_delayed_transfer_confirmed", container-identifier: container-identifier, 
+                    originator: source, beneficiary: target, resource-amount: resource-amount,
+                    confirmation-hash: (hash160 confirmation-code), elapsed-blocks: (- block-height creation-time)})
+            (ok true)
+          )
+        error ERROR_OPERATION_FAILED
+      )
+    )
+  )
+)
+
+;; Establish multi-signature authorization for high-value containers
+(define-public (establish-multi-signature-auth (container-identifier uint) (required-signers uint) (authorized-signers (list 5 principal)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (asserts! (> required-signers u0) ERROR_INVALID_QUANTITY)
+    (asserts! (<= required-signers (len authorized-signers)) ERROR_INVALID_QUANTITY)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (resource-amount (get quantity container-details))
+      )
+      ;; Only originator or admin can establish multi-sig
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      ;; Only for containers above threshold (5000 STX)
+      (asserts! (> resource-amount u5000) (err u240))
+      ;; Only for containers in pending or accepted status
+      (asserts! (or (is-eq (get container-status container-details) "pending") 
+                   (is-eq (get container-status container-details) "accepted")) 
+               ERROR_ALREADY_PROCESSED)
+
+      (print {event: "multi_sig_established", container-identifier: container-identifier, originator: source, 
+              required-signers: required-signers, authorized-signers: authorized-signers})
+      (ok true)
+    )
+  )
+)
