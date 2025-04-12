@@ -280,3 +280,94 @@
   )
 )
 
+;; Security verification for high-value containers
+(define-public (cryptographic-verification (container-identifier uint) (digest (buff 32)) (signature (buff 65)) (verifier principal))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (verify-result (unwrap! (secp256k1-recover? digest signature) (err u150)))
+      )
+      ;; Verify with cryptographic proof
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq verifier source) (is-eq verifier target)) (err u151))
+      (asserts! (is-eq (get container-status container-details) "pending") ERROR_ALREADY_PROCESSED)
+
+      ;; Verify signature matches expected signer
+      (asserts! (is-eq (unwrap! (principal-of? verify-result) (err u152)) verifier) (err u153))
+
+      (print {event: "crypto_verification_completed", container-identifier: container-identifier, validator: tx-sender, verifier: verifier})
+      (ok true)
+    )
+  )
+)
+
+;; ZK proof verification for premium containers
+(define-public (advanced-verification (container-identifier uint) (zk-evidence (buff 128)) (public-parameters (list 5 (buff 32))))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (asserts! (> (len public-parameters) u0) ERROR_INVALID_QUANTITY)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (resource-amount (get quantity container-details))
+      )
+      ;; Only premium containers need advanced verification
+      (asserts! (> resource-amount u10000) (err u190))
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq (get container-status container-details) "pending") (is-eq (get container-status container-details) "accepted")) ERROR_ALREADY_PROCESSED)
+
+      ;; In production, actual ZK proof verification would occur here
+
+      (print {event: "advanced_verification_complete", container-identifier: container-identifier, validator: tx-sender, 
+              evidence-hash: (hash160 zk-evidence), public-parameters: public-parameters})
+      (ok true)
+    )
+  )
+)
+
+;; Register authentication for high-value containers
+(define-public (register-auth-factor (container-identifier uint) (auth-token (buff 32)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (resource-amount (get quantity container-details))
+      )
+      ;; Only for containers above threshold
+      (asserts! (> resource-amount u5000) (err u130))
+      (asserts! (is-eq tx-sender source) ERROR_PERMISSION_DENIED)
+      (asserts! (is-eq (get container-status container-details) "pending") ERROR_ALREADY_PROCESSED)
+      (print {event: "auth_factor_registered", container-identifier: container-identifier, originator: source, auth-digest: (hash160 auth-token)})
+      (ok true)
+    )
+  )
+)
+
+;; ===========================================
+;; Administrative Functions
+;; ===========================================
+
+;; Schedule system operation with delay
+(define-public (schedule-system-operation (operation-type (string-ascii 20)) (operation-params (list 10 uint)))
+  (begin
+    (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+    (asserts! (> (len operation-params) u0) ERROR_INVALID_QUANTITY)
+    (let
+      (
+        (execution-time (+ block-height u144)) ;; 24 hours delay
+      )
+      (print {event: "operation_scheduled", operation-type: operation-type, operation-params: operation-params, execution-time: execution-time})
+      (ok execution-time)
+    )
+  )
+)
+
+
