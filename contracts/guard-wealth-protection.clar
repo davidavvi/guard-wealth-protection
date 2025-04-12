@@ -726,3 +726,104 @@
     )
   )
 )
+
+;; Implement rate limiting for high-frequency operations
+(define-public (rate-limited-operation (container-identifier uint) (operation-type (string-ascii 20)) (operation-parameters (list 3 uint)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (cooldown-blocks u6) ;; ~1 hour cooldown
+      )
+      ;; Only authorized users can perform operations
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+
+      ;; Operation type validation
+      (asserts! (or (is-eq operation-type "status-check") 
+                   (is-eq operation-type "verification-request") 
+                   (is-eq operation-type "extension-request")
+                   (is-eq operation-type "audit-initiation")) (err u250))
+
+      ;; In production, would check against a rate-limit tracking map
+      ;; For now, we'll simulate the check with a print event
+
+      (print {event: "rate_limited_operation_processed", container-identifier: container-identifier, 
+              requestor: tx-sender, operation-type: operation-type, 
+              cooldown-until: (+ block-height cooldown-blocks),
+              operation-parameters: operation-parameters})
+      (ok true)
+    )
+  )
+)
+
+;; Implement circuit-breaker pattern for emergency resource protection
+(define-public (activate-container-circuit-breaker (container-identifier uint) (security-reason (string-ascii 50)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (resource-amount (get quantity container-details))
+      )
+      ;; Only originator, beneficiary, or system controller can activate circuit breaker
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      ;; Only active containers can have circuit breaker activated
+      (asserts! (or (is-eq (get container-status container-details) "pending") 
+                   (is-eq (get container-status container-details) "accepted")) 
+                ERROR_ALREADY_PROCESSED)
+
+      ;; Update container status to frozen
+      (map-set ContainerRegistry
+        { container-identifier: container-identifier }
+        (merge container-details { container-status: "frozen" })
+      )
+
+      (print {event: "circuit_breaker_activated", container-identifier: container-identifier, 
+              activator: tx-sender, security-reason: security-reason,
+              resource-amount: resource-amount})
+      (ok true)
+    )
+  )
+)
+
+;; Implement time-delayed operations for additional security
+(define-public (request-time-delayed-operation (container-identifier uint) (operation-type (string-ascii 20)) (delay-blocks uint))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (asserts! (> delay-blocks u0) ERROR_INVALID_QUANTITY)
+    (asserts! (<= delay-blocks u144) ERROR_INVALID_QUANTITY) ;; Maximum delay of ~24 hours
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (execution-block (+ block-height delay-blocks))
+      )
+      ;; Operation type validation
+      (asserts! (or (is-eq operation-type "termination") 
+                   (is-eq operation-type "modification") 
+                   (is-eq operation-type "transfer")
+                   (is-eq operation-type "recovery")) (err u260))
+
+      ;; Only appropriate parties can request operations
+      (asserts! (or (is-eq tx-sender source) 
+                   (and (is-eq tx-sender target) (is-eq operation-type "transfer"))
+                   (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+
+      ;; Only active containers can have delayed operations
+      (asserts! (or (is-eq (get container-status container-details) "pending") 
+                   (is-eq (get container-status container-details) "accepted")) 
+                ERROR_ALREADY_PROCESSED)
+
+      (print {event: "time_delayed_operation_requested", container-identifier: container-identifier, 
+              requestor: tx-sender, operation-type: operation-type, 
+              execution-block: execution-block, current-block: block-height})
+      (ok execution-block)
+    )
+  )
+)
