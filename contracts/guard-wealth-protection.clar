@@ -166,3 +166,117 @@
     )
   )
 )
+
+;; Recover lapsed container resources
+(define-public (recover-lapsed-container (container-identifier uint))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (resource-amount (get quantity container-details))
+        (expiration (get termination-block container-details))
+      )
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender SYSTEM_CONTROLLER)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq (get container-status container-details) "pending") (is-eq (get container-status container-details) "accepted")) ERROR_ALREADY_PROCESSED)
+      (asserts! (> block-height expiration) (err u108)) ;; Must be expired
+      (match (as-contract (stx-transfer? resource-amount tx-sender source))
+        success
+          (begin
+            (map-set ContainerRegistry
+              { container-identifier: container-identifier }
+              (merge container-details { container-status: "lapsed" })
+            )
+            (print {event: "lapsed_container_recovered", container-identifier: container-identifier, originator: source, resource-amount: resource-amount})
+            (ok true)
+          )
+        error ERROR_OPERATION_FAILED
+      )
+    )
+  )
+)
+
+;; ===========================================
+;; Dispute Resolution Functions 
+;; ===========================================
+
+;; Initiate container dispute
+(define-public (contest-container (container-identifier uint) (justification (string-ascii 50)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+      )
+      (asserts! (or (is-eq tx-sender source) (is-eq tx-sender target)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq (get container-status container-details) "pending") (is-eq (get container-status container-details) "accepted")) ERROR_ALREADY_PROCESSED)
+      (asserts! (<= block-height (get termination-block container-details)) ERROR_CONTAINER_LAPSED)
+      (map-set ContainerRegistry
+        { container-identifier: container-identifier }
+        (merge container-details { container-status: "contested" })
+      )
+      (print {event: "container_contested", container-identifier: container-identifier, contestant: tx-sender, justification: justification})
+      (ok true)
+    )
+  )
+)
+
+;; Adjudicate contested container
+(define-public (adjudicate-contest (container-identifier uint) (originator-allocation uint))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+    (asserts! (<= originator-allocation u100) ERROR_INVALID_QUANTITY) ;; Percentage must be 0-100
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (resource-amount (get quantity container-details))
+        (source-portion (/ (* resource-amount originator-allocation) u100))
+        (target-portion (- resource-amount source-portion))
+      )
+      (asserts! (is-eq (get container-status container-details) "contested") (err u112)) ;; Must be contested
+      (asserts! (<= block-height (get termination-block container-details)) ERROR_CONTAINER_LAPSED)
+
+      ;; Allocate originator's portion
+      (unwrap! (as-contract (stx-transfer? source-portion tx-sender source)) ERROR_OPERATION_FAILED)
+
+      ;; Allocate beneficiary's portion
+      (unwrap! (as-contract (stx-transfer? target-portion tx-sender target)) ERROR_OPERATION_FAILED)
+
+      (print {event: "contest_adjudicated", container-identifier: container-identifier, originator: source, beneficiary: target, 
+              originator-amount: source-portion, beneficiary-amount: target-portion, originator-allocation: originator-allocation})
+      (ok true)
+    )
+  )
+)
+
+;; ===========================================
+;; Security Enhancement Functions
+;; ===========================================
+
+;; Freeze suspicious container
+(define-public (quarantine-container (container-identifier uint) (justification (string-ascii 100)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+      )
+      (asserts! (or (is-eq tx-sender SYSTEM_CONTROLLER) (is-eq tx-sender source) (is-eq tx-sender target)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq (get container-status container-details) "pending") 
+                   (is-eq (get container-status container-details) "accepted")) 
+                ERROR_ALREADY_PROCESSED)
+
+      (print {event: "container_quarantined", container-identifier: container-identifier, reporter: tx-sender, justification: justification})
+      (ok true)
+    )
+  )
+)
+
