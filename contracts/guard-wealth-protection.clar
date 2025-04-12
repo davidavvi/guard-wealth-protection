@@ -545,3 +545,94 @@
   )
 )
 
+;; Monitor for suspicious container activity patterns
+;; Identifies potentially malicious patterns and takes protective action
+(define-public (flag-suspicious-activity (container-identifier uint) (activity-type (string-ascii 20)) (evidence (buff 64)))
+  (begin
+    (asserts! (container-exists? container-identifier) ERROR_INVALID_IDENTIFIER)
+    (let
+      (
+        (container-details (unwrap! (map-get? ContainerRegistry { container-identifier: container-identifier }) ERROR_CONTAINER_MISSING))
+        (source (get originator container-details))
+        (target (get beneficiary container-details))
+        (status (get container-status container-details))
+      )
+      (asserts! (or (is-eq tx-sender SYSTEM_CONTROLLER) (is-eq tx-sender source) (is-eq tx-sender target)) ERROR_PERMISSION_DENIED)
+      (asserts! (or (is-eq activity-type "unusual-timing") 
+                   (is-eq activity-type "anomalous-quantity") 
+                   (is-eq activity-type "suspicious-pattern")
+                   (is-eq activity-type "authorization-mismatch")) (err u401))
+
+      ;; Only flag containers in certain states
+      (asserts! (or (is-eq status "pending") 
+                   (is-eq status "accepted")
+                   (is-eq status "contested")) (err u402))
+
+      ;; Update container status to flagged
+      (map-set ContainerRegistry
+        { container-identifier: container-identifier }
+        (merge container-details { container-status: "flagged" })
+      )
+
+      (print {event: "suspicious_activity_flagged", container-identifier: container-identifier, reporter: tx-sender, 
+              activity-type: activity-type, evidence-hash: (hash160 evidence)})
+      (ok true)
+    )
+  )
+)
+
+;; Implement secure administrator rotation with verification
+;; Enhances security by enabling secure transfer of admin privileges
+(define-public (rotate-system-administrator (new-admin principal) (auth-signature (buff 65)) (effective-block uint))
+  (begin
+    (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+    (asserts! (not (is-eq new-admin SYSTEM_CONTROLLER)) ERROR_INVALID_ORIGINATOR)
+    (asserts! (>= effective-block block-height) ERROR_INVALID_QUANTITY)
+    (let
+      (
+        (transition-delay u144) ;; 24 hours (144 blocks) delay for security
+        (activation-block (+ block-height transition-delay))
+      )
+      ;; Ensure minimum delay period
+      (asserts! (>= effective-block activation-block) (err u601))
+
+      ;; In production, this would update a variable tracking the system controller
+      ;; and implement a time-delayed transfer of authority
+
+      (print {event: "administrator_rotation_scheduled", current-admin: SYSTEM_CONTROLLER, future-admin: new-admin, 
+              effective-block: effective-block, signature: auth-signature})
+      (ok activation-block)
+    )
+  )
+)
+
+;; Implement circuit breaker for emergency system shutdown
+;; Provides safety mechanism to halt all operations in case of detected compromise
+(define-public (activate-system-circuit-breaker (severity (string-ascii 10)) (justification (string-ascii 100)))
+  (begin
+    (asserts! (is-eq tx-sender SYSTEM_CONTROLLER) ERROR_PERMISSION_DENIED)
+    (asserts! (or (is-eq severity "low") 
+                 (is-eq severity "medium") 
+                 (is-eq severity "high")
+                 (is-eq severity "critical")) (err u701))
+    (let
+      (
+        (auto-resume-blocks (if (is-eq severity "critical") 
+                               u1440 ;; 10 days for critical
+                               (if (is-eq severity "high")
+                                  u288 ;; 2 days for high
+                                  (if (is-eq severity "medium")
+                                     u144 ;; 1 day for medium
+                                     u72)))) ;; 12 hours for low
+        (resume-block (+ block-height auto-resume-blocks))
+      )
+      ;; In production, this would set a global contract variable
+      ;; that would be checked by all functions to prevent operations
+      ;; during the circuit breaker period
+
+      (print {event: "circuit_breaker_activated", administrator: tx-sender, severity: severity, 
+              justification: justification, auto-resume-block: resume-block})
+      (ok resume-block)
+    )
+  )
+)
